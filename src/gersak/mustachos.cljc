@@ -132,108 +132,6 @@
      (let [[_ loc] (parse-text template section-zipper)]
        (zip/root loc)))))
 
-(comment
-  (time (extract-section-tokens template)))
-
-;(defn parse
-;  ([template]
-;   ;; TODO - handle Nested properly by pairing right
-;   ;; sections and not oversimplifying with str/index-of str/last-index-of
-;   (letfn [(next-section-token [template]
-;             (re-find
-;               #"(?m)^\{\{[#^].*?\}\} *[\n\r]+|^ *\{\{[#^].*?\}\} *[\n\r]+|\{\{[#^].*?\}\}"
-;               template))
-;           (section-start-tokens [template]
-;             (re-seq
-;               #"(?m)^\{\{[#^].*?\}\} *[\n\r]+|^ *\{\{[#^].*?\}\} *[\n\r]+|\{\{[#^].*?\}\}"
-;               template))
-;           (section-end-tokens [template token-name]
-;             (re-seq
-;               (re-pattern
-;                 (str
-;                   "(?m)"
-;                   ;; Handle starting section without spaces
-;                   "^\\{\\{/\\s*" token-name "\\s*\\}\\}[\\n\\r]+"
-;                   ;; Handle starting spaces with only section declaration
-;                   "|" "\\^ *\\{\\{/\\s*" token-name "\\s*\\}\\} *[\\n\\r]+"
-;                   ;; Handle inline section
-;                   "|" "\\{\\{/\\s*" token-name "\\s*\\}\\}"
-;                   ;; Handle end section
-;                   "|" "\\n *\\{\\{/\\s*" token-name "\\s*\\}\\} *\\Z"))
-;               template))
-;           (section-token-name [token]
-;             (str/trim (re-find #"(?<=\{\{[#^]).*?(?=\}\})" token)))
-;           (end-section-token [template token-name]
-;             (last (section-end-tokens template)))]
-;     (if (string? template)
-;       (parse (->Section template [] nil))
-;       (loop [{:keys [cursor body] :as result} template
-;              text (:body template)]
-;         ;; If there is next section than isolate and parse that section
-;         ;; and recur with text leftower
-;         (if-let [start (next-section-token text)]
-;           ;; Get section name
-;           (let [name (section-token-name start)
-;                 _ (println "TEXT: " [name text])
-;                 end (end-section-token text name)
-;                 start-idx (str/index-of text start)
-;                 end-idx (str/last-index-of text end)
-;                 _ (println "INDX: " [start-idx end-idx])
-;                 template' (subs text (+ (count start) start-idx) end-idx)
-;                 pre-section-text (subs text 0 start-idx)
-;                 post-section-text (subs text (+ (count end) end-idx))
-;                 inverted? (str/starts-with? start "{{^")
-;                 cursor' ((fnil conj []) cursor (keyword name))]
-;             ; (println
-;             ;   "PRE\n" pre-section-text
-;             ;   "\n@\n" template'
-;             ;   "\nPOST\n" post-section-text)
-;             (recur
-;               (->
-;                 result
-;                 (assoc :body nil)
-;                 (update :sections
-;                         (fn [sections]
-;                           (cond-> (or sections [])
-;                             (not-empty pre-section-text)
-;                             (conj (->Section pre-section-text nil cursor))
-;                             ;;
-;                             :sections
-;                             (conj 
-;                               (->
-;                                 (->Section template' [] cursor')
-;                                 parse
-;                                 (assoc :inverted? inverted?)))))))
-;               post-section-text))
-;           (if (or (some? body) (empty? text)) result
-;             (update result :sections (fnil conj []) (->Section text nil cursor)))))))))
-
-
-(comment
-  (def sections (parse template))
-  (def data {:a {:one 1} :b {:two 2} :c {:three 3 :d {:four 4 :five 5}}})
-  (def cursor [:a :b :c :d :five])
-  (def data {:foo "bar"})
-  (def cursor [:foo])
-  (def cursor [:tops :middles :bottoms])
-  (def template
-    "|
-{{#bool}}
-* first
-{{/bool}}
-* {{two}}
-{{#bool}}
-* third
-{{/bool}}")
-  (parse template)
-  (println (render template {:bool true :two "second"}))
-  (def data 
-    {:tops
-     {:tname {:upper "A" :lower "a"}
-      :middles {:mname "1"
-                :bottoms [{:bname "x"} {:bname "y"}]}}})
-  (println (str/replace (render template data) #"(?<=[\n\r]+)\s+\n" "")))
-
 
 (def ^:dynamic *context-stack* nil)
 
@@ -259,64 +157,90 @@
   ([template data _]
    (let [sections (if (string? template) (parse template)
                     template)]
-     (letfn [(print-section [{:keys [context body sections] :as section}]
-               (let [context (last context)] 
-                 (if body
-                   (let [variables (distinct
-                                     (map
-                                       (fn [variable]
-                                         ; (println "VARIABLE: " variable)
-                                         (let [[f :as content] (subs variable 2 (- (count variable) 2))]
-                                           (case f
-                                             ">" {:escape? true
-                                                  :name (subs content 1)
-                                                  :partial? true}
-                                             "!" {:escape? true
-                                                  :comment (subs content 1)}
-                                             "{" {:escape? true
-                                                  :name (str/trim
-                                                          (subs content 1 (dec (count content))))}
-                                             "&" {:name (str/trim (subs content 1))}
-                                             {:escape? true
-                                              :name (str/trim content)})))
-                                       (re-seq #"(?m)\{\{.*?\}\}" body)))]
-                     (letfn [(replace-variable [body {:keys [name]}]
-                               (if (nil? name) body
-                                 (let [path (map keyword (str/split name #"\."))
-                                       value (case name
-                                               "." (get *context-stack* :.)
-                                               (get-in *context-stack* path))]
-                                   ; (println "NAME: " name)
-                                   ; (println "path: " path)
-                                   ; (println "VALUE: " value)
-                                   (str
-                                     (when value
-                                       (str/replace
-                                         body
-                                         (re-pattern (str "\\{\\{[&!]*\\s*" name "\\s*\\}\\}"))
-                                         (str value)))))))]
-                       (println "CONTEXT: " context)
-                       (println "STACK: " *context-stack*)
-                       (println "VARIABLES: " variables)
-                       (str
-                         (if (empty? variables)
-                           ; body 
-                           (if context (when (:. *context-stack*) body) body) 
-                           (when-let [context-value (if context
-                                                      (get *context-stack* context)
-                                                      *context-stack*)]
-                             (if (vector? context-value)
-                               (let [stack (recompute-stack context)]
-                                 (reduce
-                                   (fn [body' value]
-                                     (binding [*context-stack* (assoc stack context value :. value)]
-                                       (str body' (print-section section))))
-                                   ""
-                                   context-value))
-                               (binding [*context-stack* (recompute-stack context)]
-                                 (reduce replace-variable body variables))))))))
-                   (binding [*context-stack* (recompute-stack context)]
-                     (reduce str (map print-section sections))))))]
+     (letfn [(multiply? [value]
+               (sequential? value)
+               #_(or
+                 (every? map? value)
+                 (every? sequential? value)))
+             (print-section [{:keys [context body sections] :as section}]
+               (let [context (last context)
+                     variables (when body
+                                 (distinct
+                                   (map
+                                     (fn [variable]
+                                       ; (println "VARIABLE: " variable)
+                                       (let [[f :as content] (subs variable 2 (- (count variable) 2))]
+                                         (case f
+                                           ">" {:escape? true
+                                                :name (subs content 1)
+                                                :partial? true}
+                                           "!" {:escape? true
+                                                :comment (subs content 1)}
+                                           "{" {:escape? true
+                                                :name (str/trim
+                                                        (subs content 1 (dec (count content))))}
+                                           "&" {:name (str/trim (subs content 1))}
+                                           {:escape? true
+                                            :name (str/trim content)})))
+                                     (re-seq #"(?m)\{\{.*?\}\}" body))))] 
+                 (letfn [(replace-variable [body {:keys [name]}]
+                           (if (nil? name) body
+                             (let [path (map keyword (str/split name #"\."))
+                                   value (case name
+                                           "." (get *context-stack* :.)
+                                           (get-in *context-stack* path))]
+                               ; (println "NAME: " name)
+                               ; (println "path: " path)
+                               ; (println "VALUE: " value)
+                               (str
+                                 (when value
+                                   (str/replace
+                                     body
+                                     (re-pattern (str "\\{\\{[&!]*\\s*" name "\\s*\\}\\}"))
+                                     (str value)))))))]
+                   (println "Body: " body)
+                   (println "CONTEXT: " context)
+                   (println "STACK: " *context-stack*)
+                   ; (println "Section: " section)
+                   ; (println "VARIABLES: " variables)
+                   (str
+                     (if-let [context-value (if context
+                                              (get *context-stack* context)
+                                              *context-stack*)]
+                       (cond
+                         ;; If current content is list
+                         (and context (multiply? context-value))
+                         (let [stack (recompute-stack context)]
+                           (reduce
+                             (fn [body' value]
+                               (binding [*context-stack* (assoc stack context value :. value)]
+                                 ;; TODO - Fix this... It is not working for (123)(abc))
+                                 #_(reduce str body' (map print-section sections))
+                                 (str body' (print-section section))))
+                             ""
+                             context-value))
+                         ;; Otherwise check if there is body
+                         ;; and variables are empty than return body
+                         (and body (empty? variables)) body
+                         ;; If there is some body and variables aren't empty
+                         ;; try to replace those variables
+                         (some? body)
+                         (binding [*context-stack* (recompute-stack context)]
+                           (reduce replace-variable body variables))
+                         ;; If there is no body try to print all sections
+                         (empty? body)
+                         (binding [*context-stack* (recompute-stack context)]
+                           (reduce str (map print-section sections)))
+                         ;;
+                         :else
+                         (throw
+                           (ex-info
+                             "This shouldn't happen"
+                             {:section section
+                              :variables variables
+                              :context context
+                              :stack *context-stack*})))
+                       (when (empty? context) body))))))]
        (binding [*context-stack* data]
          (print-section sections))))))
 
@@ -428,7 +352,8 @@
 "|
 * first
 * second
-* third")
+* third
+"
       (render
 "|
 {{#bool}}
@@ -438,7 +363,7 @@
 {{#bool}}
 * third
 {{/bool}}"
-        {:bool true :two "second"})))
+        {:bool true :two "second"}))))
   (testing "Nested truthy sections should have their contents rendered."
     (is
       (=
@@ -453,6 +378,31 @@
        (render
          "| A {{#bool}}B {{#bool}}C{{/bool}} D{{/bool}} E |"
          {:bool false}))))
+  (testing "Failed context lookups should be considered falsey."
+    (is
+      (=
+       "[]"
+       (render "[{{#missing}}Found key 'missing'!{{/missing}}]" {}))))
+  (testing "Implicit iterators should directly interpolate strings."
+    (is
+      (=
+       "(a)(b)(c)(d)(e)"
+       (render "{{#list}}({{.}}){{/list}}" {:list ["a" "b" "c" "d" "e"]}))))
+  (testing "Implicit Iterator - Integer"
+    (is
+      (= "(1)(2)(3)(4)(5)"
+         (render "{{#list}}({{.}}){{/list}}" {:list [1 2 3 4 5]}))))
+  (testing "Implicit iterators should cast decimals to strings and interpolate."
+    (is
+      (= "(1.1)(2.2)(3.3)(4.4)(5.5)"
+         (render "{{#list}}({{.}}){{/list}}" {:list [1.10, 2.20, 3.30, 4.40, 5.50]}))))
+  ;; FIXME
+  (testing "Implicit iterators should allow iterating over nested arrays."
+    (is
+      (= "(123)(abc)"
+         (render
+           (parse "{{#list}}({{#.}}{{.}}{{/.}}){{/list}}")
+           {:list [[1 2 3] ["a" "b" "c"]]}))))
   (testing "Parent contexts"
     (is
       (= "foo, bar, baz"
