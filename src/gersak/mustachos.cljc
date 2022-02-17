@@ -76,7 +76,6 @@
    (letfn [(clean [text]
              (str/replace text #"^\n" ""))
            (parse-text [rtext loc]
-             ; (println "RTEXT: " rtext)
              (if (empty? rtext) [nil loc]
                (let [{:keys [context]} (zip/node loc)
                      s (str/index-of rtext "{{#")
@@ -91,7 +90,8 @@
                          "Template syntax error. Context not closed"
                          {:context context}))
                      [nil (-> loc
-                              (zip/append-child (->Section (str/replace rtext #"\n$" "") nil context)))])
+                              (zip/append-child
+                                (->Section rtext nil context)))])
                    ;; If some section mark was found
                    (let [[m] (sort (remove nil? [s e]))
                          end (+ m (str/index-of (subs rtext m) "}}"))
@@ -106,7 +106,7 @@
                        (as-> loc l
                          ;; lookforward join section
                          (if (zero? m) l
-                           (zip/append-child l (->Section (clean (subs rtext 0 m)) nil context)))
+                           (zip/append-child l (->Section (subs rtext 0 m) nil context)))
                          ;; Move down
                          (let [l' (->
                                     (zip/append-child l (->Section nil [] ((fnil conj []) context name)))
@@ -118,11 +118,10 @@
                        ;; If it doesn't than throw exception
                        (if (= (last context) name)
                          ;; if it name matches go to previous context
-                         (let [section (->Section (clean (subs rtext 0 e)) [] context)
+                         (let [section (->Section (subs rtext 0 e) [] context)
                                loc' (cond->
                                       (zip/append-child loc section)
                                       (not-empty context) zip/up)]
-                           ; (println "ADDDING END SECTION " (zip/node loc'))
                            (parse-text rtext' loc'))
                          (throw
                            (ex-info
@@ -151,12 +150,18 @@
         (assoc *context-stack* :. value)))))
 
 
+(defn- get-context-value [context]
+  (if context
+    (let [context (map keyword (str/split (name context) #"\."))]
+      (get-in *context-stack* context))
+    *context-stack*))
+
+
 (defn render
   ([template] (render template nil))
   ([template data] (render template data nil))
   ([template data _]
-   (let [sections (if (string? template) (parse template)
-                    template)]
+   (let [template (if (string? template) (parse template) template)]
      (letfn [(multiply? [value]
                (sequential? value)
                #_(or
@@ -198,15 +203,17 @@
                                      body
                                      (re-pattern (str "\\{\\{[&!]*\\s*" name "\\s*\\}\\}"))
                                      (str value)))))))]
-                   (println "Body: " body)
-                   (println "CONTEXT: " context)
-                   (println "STACK: " *context-stack*)
+                   ; (println "Body: " body)
+                   ; (println "CONTEXT: " context)
+                   ; (println "STACK: " *context-stack*)
                    ; (println "Section: " section)
                    ; (println "VARIABLES: " variables)
+                   ; (println "CONTEXT VALUE: "
+                   ;          (if context
+                   ;            (get *context-stack* context)
+                   ;            *context-stack*))
                    (str
-                     (if-let [context-value (if context
-                                              (get *context-stack* context)
-                                              *context-stack*)]
+                     (if-let [context-value (get-context-value context)]
                        (cond
                          ;; If current content is list
                          (and context (multiply? context-value))
@@ -228,7 +235,7 @@
                          (binding [*context-stack* (recompute-stack context)]
                            (reduce replace-variable body variables))
                          ;; If there is no body try to print all sections
-                         (empty? body)
+                         (nil? body)
                          (binding [*context-stack* (recompute-stack context)]
                            (reduce str (map print-section sections)))
                          ;;
@@ -240,12 +247,13 @@
                               :variables variables
                               :context context
                               :stack *context-stack*})))
-                       (when (empty? context) body))))))]
+                       (when (nil? context) body))))))]
        (binding [*context-stack* data]
-         (print-section sections))))))
+         (print-section template))))))
 
 (comment
   (re-find #"^\s+\n+" text)
+  (clojure.test/run-tests 'gersak.mustachos)
   (parse "{{#list}}{{item}}{{/list}}"))
 
 (deftest section
@@ -255,18 +263,26 @@
          (render
            "{{#boolean}}This should be rendered.{{/boolean}}"
            {:boolean true}))))
-  (testing "Truthy sections should have their contents rendered."
+  (testing "Falsey sections should have their contents omitted."
     (is
-      (= "This should be rendered."
+      (= ""
          (render
-           "{{#boolean}}This should not be rendered.{{/boolean}}"
+           (parse "{{#boolean}}This should not be rendered.{{/boolean}}")
            {:boolean false}))))
   (testing "Null is falsey."
     (is
-      (= "This should be rendered."
+      (= ""
          (render
            "{{#null}}This should not be rendered.{{/null}}"
            {:null nil}))))
+  (testing "Parent contexts"
+    (is
+      (= "foo, bar, baz"
+         (render
+           "{{#sec}}{{a}}, {{b}}, {{c.d}}{{/sec}}"
+           {:a "foo" :b "wrong" :sec {:b "bar"} :c {:d "baz"}}))))
+  (testing "Lists should be iterated; list items should visit the context stack."
+    (is (= "123" (render "{{#list}}{{item}}{{/list}}" {:list [{:item 1} {:item 2} {:item 3}]}))))
   (testing "Objects and hashes should be pushed onto the context stack."
     (is
       (= "Hi Joe."
@@ -293,41 +309,41 @@
   (testing "Deeply Nested Contexts"
     (is
       (= "|
-1
-121
-12321
-1234321
-123454321
-12345654321
-123454321
-1234321
-12321
-121
-1
-"
+         1
+         121
+         12321
+         1234321
+         123454321
+         12345654321
+         123454321
+         1234321
+         12321
+         121
+         1
+         "
          (render
            "|
-{{#a}}
-{{one}}
-{{#b}}
-{{one}}{{two}}{{one}}
-{{#c}}
-{{one}}{{two}}{{three}}{{two}}{{one}}
-{{#d}}
-{{one}}{{two}}{{three}}{{four}}{{three}}{{two}}{{one}}
-{{#five}}
-{{one}}{{two}}{{three}}{{four}}{{five}}{{four}}{{three}}{{two}}{{one}}
-{{one}}{{two}}{{three}}{{four}}{{.}}6{{.}}{{four}}{{three}}{{two}}{{one}}
-{{one}}{{two}}{{three}}{{four}}{{five}}{{four}}{{three}}{{two}}{{one}}
-{{/five}}
-{{one}}{{two}}{{three}}{{four}}{{three}}{{two}}{{one}}
-{{/d}}
-{{one}}{{two}}{{three}}{{two}}{{one}}
-{{/c}}
-{{one}}{{two}}{{one}}
-{{/b}}
-{{one}}
-{{/a}}"
+           {{#a}}
+           {{one}}
+           {{#b}}
+           {{one}}{{two}}{{one}}
+           {{#c}}
+           {{one}}{{two}}{{three}}{{two}}{{one}}
+           {{#d}}
+           {{one}}{{two}}{{three}}{{four}}{{three}}{{two}}{{one}}
+           {{#five}}
+           {{one}}{{two}}{{three}}{{four}}{{five}}{{four}}{{three}}{{two}}{{one}}
+           {{one}}{{two}}{{three}}{{four}}{{.}}6{{.}}{{four}}{{three}}{{two}}{{one}}
+           {{one}}{{two}}{{three}}{{four}}{{five}}{{four}}{{three}}{{two}}{{one}}
+           {{/five}}
+           {{one}}{{two}}{{three}}{{four}}{{three}}{{two}}{{one}}
+           {{/d}}
+           {{one}}{{two}}{{three}}{{two}}{{one}}
+           {{/c}}
+           {{one}}{{two}}{{one}}
+           {{/b}}
+           {{one}}
+           {{/a}}"
            {:a {:one 1}
             :b {:two 2}
             :c {:three 3 :d {:four 4 :five 5}}}))))
@@ -383,31 +399,126 @@
       (=
        "[]"
        (render "[{{#missing}}Found key 'missing'!{{/missing}}]" {}))))
-  (testing "Implicit iterators should directly interpolate strings."
+  ;;
+  (testing "Implict iterators"
     (is
       (=
        "(a)(b)(c)(d)(e)"
-       (render "{{#list}}({{.}}){{/list}}" {:list ["a" "b" "c" "d" "e"]}))))
-  (testing "Implicit Iterator - Integer"
+       (render "{{#list}}({{.}}){{/list}}" {:list ["a" "b" "c" "d" "e"]}))
+      "Implicit iterators should directly interpolate strings.")
     (is
       (= "(1)(2)(3)(4)(5)"
-         (render "{{#list}}({{.}}){{/list}}" {:list [1 2 3 4 5]}))))
-  (testing "Implicit iterators should cast decimals to strings and interpolate."
+         (render "{{#list}}({{.}}){{/list}}" {:list [1 2 3 4 5]}))
+      "Implicit Iterator - Integer")
     (is
       (= "(1.1)(2.2)(3.3)(4.4)(5.5)"
-         (render "{{#list}}({{.}}){{/list}}" {:list [1.10, 2.20, 3.30, 4.40, 5.50]}))))
-  ;; FIXME
-  (testing "Implicit iterators should allow iterating over nested arrays."
+         (render "{{#list}}({{.}}){{/list}}" {:list [1.10, 2.20, 3.30, 4.40, 5.50]}))
+      "Implicit iterators should cast decimals to strings and interpolate.")
+    ;; FIXME
     (is
       (= "(123)(abc)"
          (render
            (parse "{{#list}}({{#.}}{{.}}{{/.}}){{/list}}")
-           {:list [[1 2 3] ["a" "b" "c"]]}))))
-  (testing "Parent contexts"
+           {:list [[1 2 3] ["a" "b" "c"]]}))
+      "Implicit iterators should allow iterating over nested arrays."))
+  ;;
+  (testing "Dotted names"
     (is
-      (= "foo, bar, baz"
+      (=
+       "\"Here\" == \"Here\""
+       (render (parse "\"{{#a.b.c}}Here{{/a.b.c}}\" == \"Here\"") {:a {:b {:c true}}}))
+      "Dotted names should be valid for Section tags.")
+    (is
+      (=
+       ""
+       (render
+         "\"{{#a.b.c}}Here{{/a.b.c}}\" == \"\""
+         {:a {:b {:c false}}}))
+      "Dotted names should be valid for Section tags.")
+    (is
+      (=
+       "\"\" == \"\""
+       (render "\"{{#a.b.c}}Here{{/a.b.c}}\" == \"\"" {:a {}}))
+      "Dotted names that cannot be resolved should be considered falsey."))
+  ;;
+  (testing "Whitespace sensitivity"
+    (is
+      (=
+       " | \t|\t | \n"
+       (render " | {{#boolean}}\t|\t{{/boolean}} | \n" {:boolean true}))
+      "Sections should not alter surrounding whitespace.")
+    (is
+      (= " |  \n  | \n"
          (render
-           "{{#sec}}{{a}}, {{b}}, {{c.d}}{{/sec}}"
-           {:a "foo" :b "wrong" :sec {:b "bar"} :c {:d "baz"}}))))
-  (testing "Lists should be iterated; list items should visit the context stack."
-    (is (= "123" (render "{{#list}}{{item}}{{/list}}" {:list [{:item 1} {:item 2} {:item 3}]})))))
+           " | {{#boolean}} {{! Important Whitespace }}\n {{/boolean}} | \n"
+           {:boolean true}))
+      "Sections should not alter internal whitespace.")
+    (is
+      (=
+       " YES\n GOOD\n"
+       (render
+         " {{#boolean}}YES{{/boolean}}\n {{#boolean}}GOOD{{/boolean}}\n"
+         {:boolean true}))
+      "Single-line sections should not alter surrounding whitespace.")
+    ;;
+    (is
+      (=
+       "|
+| This Is
+|
+| A Line"
+       (render
+         "|
+| This Is
+{{#boolean}}
+|
+{{/boolean}}
+| A Line"
+         {:boolean true}))
+      "Standalone lines should be removed from the template.")
+    ;;
+    (is
+      (=
+       "|
+| This Is
+|
+| A Line"
+       (render
+         "|
+| This Is
+  {{#boolean}}
+|
+  {{/boolean}}
+| A Line"
+         {:boolean true}))
+      "Indented standalone lines should be removed from the template.")
+    ;;
+    (is
+      (=
+       "|\r\n|"
+       (render "|\r\n{{#boolean}}\r\n{{/boolean}}\r\n|" {:boolean true}))
+      "\"\r\n\" should be considered a newline for standalone tags.")
+    ;;
+    (is
+      (=
+       (render
+         "  {{#boolean}}\n#{{/boolean}}\n/"
+         {:boolean true})
+       "#\n/")
+      "Standalone tags should not require a newline to precede them.")
+    ;;
+    (is
+      (=
+       (render
+         "#{{#boolean}}\n/\n  {{/boolean}}"
+         {:boolean true})
+       "#\n/\n")
+      "Standalone tags should not require a newline to follow them.")
+    ;;
+    (is
+      (=
+       (render "|{{# boolean }}={{/ boolean }}|" {:boolean true})
+       "|=|")
+      "Superfluous in-tag whitespace should be ignored."))
+  
+  )
