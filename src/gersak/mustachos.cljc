@@ -61,9 +61,6 @@
                          name (keyword (str/trim (re-find #"(?<=\{\{[#/])\s*.*\s*" (subs rtext m end))))
                          end' (+ 2 end)
                          rtext' (subs rtext end')]
-                     ; (println "MS: " [s e])
-                     ; (println "NAME: " name)
-                     ; (println "Context: " context)
                      (if (= m s)
                        ;; If this is new section
                        (as-> loc l
@@ -75,7 +72,6 @@
                                     (zip/append-child l (->Section nil [] ((fnil conj []) context name)))
                                     zip/down
                                     zip/rightmost)]
-                           ; (println "NODE: " (zip/node l'))
                            (parse-text rtext' l')))
                        ;; And if section is closing, check that name matches context
                        ;; If it doesn't than throw exception
@@ -156,7 +152,7 @@
                                    value (case name
                                            "." (get *context-stack* :.)
                                            (get-in *context-stack* path))]
-                               (println "Body: " body value)
+                               ; (println "Body: " body value)
                                (str/replace
                                  body
                                  (re-pattern (str "\\{{2,3}[&]*\\s*" name "\\s*\\}{2,3}"))
@@ -210,7 +206,15 @@
                          (if (not-empty sections)
                            (reduce str (map print-section sections))
                            (reduce replace-variable body variables))))))))]
-       (binding [*context-stack* data]
+       (binding [*context-stack* (cond
+                                   (map? data)
+                                   (assoc data :. data)
+                                   ;;
+                                   (sequential? data)
+                                   {:. data}
+                                   ;;
+                                   :else
+                                   {:. data})]
          (print-section template))))))
 
 (comment
