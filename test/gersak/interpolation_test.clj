@@ -1,6 +1,6 @@
 (ns gersak.interpolation_test
   (:require
-    [gersak.mustachos :refer [render parse]]
+    [gersak.mustachos :refer [render]]
     [clojure.test :refer [deftest is testing]]))
 
 
@@ -37,7 +37,7 @@
       (=
        "These characters should be HTML escaped: &amp; &quot; &lt; &gt;"
        (render "These characters should be HTML escaped: {{forbidden}}"
-               {:forbidden "& \" <  >"}))
+               {:forbidden "& \" < >"}))
       "Basic interpolation should be HTML escaped.")
     (is
       (=
@@ -48,8 +48,7 @@
     (is
       (=
        "These characters should not be HTML escaped: & \" < >"
-       (render "These characters should not be HTML escaped: {{&forbidden}}"
-               {:forbidden "& \" < >"}))
+       (render "These characters should not be HTML escaped: {{&forbidden}}" {:forbidden "& \" < >"}))
       "Ampersand should interpolate without HTML escaping.")
     (is
       (=

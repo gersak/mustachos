@@ -137,60 +137,90 @@
                                            \> {:escape? true
                                                :name (subs content 1)
                                                :partial? true}
-                                           \{ {:escape? true
-                                                :name (str/trim
-                                                        (subs content 1 (count content)))}
+                                           ;;
+                                           \{ {:escape? false
+                                               :name (str/trim
+                                                       (subs content 1 (count content)))}
+                                           ;;
                                            \& {:name (str/trim (subs content 1))}
+                                           ;;
                                            {:escape? true
                                             :name (str/trim content)})))
                                      (re-seq #"(?m)\{\{.*?\}\}" body))))] 
-                 (letfn [(replace-variable [body {:keys [name]}]
+                 (letfn [(replace-variable [body {:keys [name escape?]}]
                            (cond
                              ;;
                              (some? name)
                              (let [path (map keyword (str/split name #"\."))
                                    value (case name
-                                           "." (get *context-stack* :.)
-                                           (get-in *context-stack* path))]
-                               ; (println "Body: " body value)
+                                             "." (get *context-stack* :.)
+                                             (get-in *context-stack* path))
+                                   value (when value
+                                           (if-not escape? value
+                                             (str/escape
+                                               (str value)
+                                               {\& "&amp;"
+                                                \" "&quot;"
+                                                \< "&lt;"
+                                                \> "&gt;"
+                                                \' "&apos;"})))]
+                               (tap>
+                                 {:message "Replacing variable"
+                                  :path path
+                                  :body body
+                                  :variable name
+                                  :escape? escape?
+                                  :value value})
                                (str/replace
                                  body
                                  (re-pattern (str "\\{{2,3}[&]*\\s*" name "\\s*\\}{2,3}"))
                                  (str value)))
                              :else body))]
-                   ; (println context)
-                   ; (println (get-context-value context))
-                   ; (println variables)
-                   ; (println body)
                    (str
                      (if-let [context-value (get-context-value context)]
                        (cond
                          ;; If current content is list
                          (and context (multiply? context-value))
                          (let [stack (recompute-stack context)]
-                           ; (println "Expanding list value: " context-value)
                            (reduce
                              (fn [body' value]
                                (binding [*context-stack* (assoc stack context value :. value)]
                                  ;; TODO - Fix this... It is not working for (123)(abc))
-                                 #_(reduce str body' (map print-section sections))
+                                 (tap>
+                                   {:message "Expanding list"
+                                    :context/stack *context-stack*
+                                    :body body'
+                                    :value value})
                                  (str body' (print-section section))))
                              ""
                              context-value))
                          ;; Otherwise check if there is body
                          ;; and variables are empty than return body
                          (and body (empty? variables))
-                         body 
+                         (do
+                           (tap>
+                             {:message "No variables. Printing body"
+                              :context context
+                              :body body})
+                           body) 
                          ;; If there is some body and variables aren't empty
                          ;; try to replace those variables
                          (some? body)
                          (binding [*context-stack* (recompute-stack context)]
-                           ; (println "VARIABLES: " variables)
-                           ; (println "Replacing variables" body)
+                           (tap>
+                             {:message "Replacing variables"
+                              :context/stack *context-stack*
+                              :context context
+                              :body body
+                              :variables variables})
                            (reduce replace-variable body variables))
                          ;; If there is no body try to print all sections
                          (nil? body)
                          (binding [*context-stack* (recompute-stack context)]
+                           (tap>
+                             {:message "Priniting children and focusing context"
+                              :context/stack *context-stack*
+                              :context context})
                            ; (println "Expanding sections: " (map :context sections))
                            (reduce str (map print-section sections)))
                          ;;
@@ -220,4 +250,5 @@
 (comment
   (re-find #"^\s+\n+" text)
   (clojure.test/run-tests 'gersak.mustachos)
+  (add-tap clojure.pprint/pprint)
   (parse "{{#list}}{{item}}{{/list}}"))
